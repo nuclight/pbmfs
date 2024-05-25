@@ -1,0 +1,1160 @@
+10.03.24
+зациклился на идее файловой системы в raw разделе с sqlite внутри для всей меты - как её хранить? бесполезно, но *** ********, *** ** ****** * ********...
+вообще исходно мысль возникла от потребности в новой DVCS, и смеси разных репозиториев (IPFS?), в таком виде польза возможна
+===
+11.03.24
+вечером опять по идее fs с sqlite, видимо традиционные indirect-блоки не очень, надо overflow maps на моменты роста в транзакции из запомненных
+в памяти списков свободных блоков... тогда это ограничивает на только один процесс писателя?
+===
+15.03.24
+проблема повреждений: делаем recovery-сектора как XOR в RAR для каждого метафайла; чтоб больше одного сектора восстановить, можно еще разбить раздел на groups и в каждой тоже иметь XOR-сектор на чисто её диапазон
+===
+16.03.24
+всю неделю думал, как представлять в базе, вдруг понял, что проблема найти
+саму базу-то, bootstrap, не решена
+===
+17.03.24
+курил доки по NTFS, смотрел вывод ntfsinfo -vi 46106 у исошки на 4 гига и выяснилась жесть: для
+длинного файл в base FILE record живёт runlist от attribute $ATTRIBUTE_LIST,
+в его кластерах на диске (!) - то есть вне MFT - живут списки, записи $DATA со
+Starting VCN на всю запись, ссылающиеся на номера extension FILE record в MFT
+каждая, а уже в каждой из них находится runlist собственно файлов на диске.
+Может, сделать аналог MFT, а вместо ntfs-ных атрибутов сделать CBOR? типа мап
+с ключом L - для листьев, конечные блоки, M ссылаются на записи в MFT,
+U ссылаются на записи в MFT для M... А каталог можно CBOR-массивом номеров
+base record сделать, тогда первые 23 для файлов, 24-31 для grow самой MFT.
+===
+18.03.24
+********** **** *****, ранлисты сложно, а что если сделать как в inode? типа
+первый мегабайт описывается прямо в base record, и это как фрагменты в UFS2,
+по 32 Кб скажем, в первой indirect-записи чуть места на заголовок и остаток
+на 63 указателя описывает суммарно уже первые 64 Мб файла, т.е. WAL/журнал
+будут увеличиваться по 32 Кб и лишь потом выделяться кусками по 1M, чтоб
+меньше потерь. Проблема тогда со следующим уровнем индиректов, в каждой записи
+же на заголовок место надо, некрасиво получается по неровности, и еще более - без
+экстентов код простой, но дофига места потратится...
+
+Следующая идея: что, если всё-таки сделать для метафайлов маленькую отдельную
+базу? Но всё равно надо её как-то найти. И её журнал. Тут две идеи:
+* маленький MFT с фиксированным числом base чисто под неё
+* резервировать на каждой странице допустим 8 байт указателя
+  - связный список долго
+  - в первой полосе по 1 Мб каждая страница на полосы по 1 Мб?
+  - а про журнал где хранить? 
+===
+20.03.24
+начал читать про ReiserFS, оказывается, Reiser3 уже и есть одно большое B-Tree!
+https://reiser4.wiki.kernel.org/index.php/V4 :
+<<Unix differs from Multics, in that Multics defined a file to be a sequence of elements (the elements could be bytes, directory entries, or something else....), while Unix defines a file to be purely a sequence of bytes. In Multics directories were then considered to be a particular type of file which was a sequence of directory entries. For many years, all implementations of Unix directories were as sequences of bytes, and the notion of location within a Unix directory is tied not to a name as you might expect, but to a byte offset within the directory.>> -- а вот это полезно для VCS
+
+<<The problem is that one is using a byte offset to represent a location whose true meaning is not a byte offset but a directory entry, and doing so for a particular file in a system which meaningfully names that file not by byte offset within the directory but by filename. Various efforts are being made in the Unix community to pretend that this byte offset is something more general than a byte offset, and they often try to do so without increasing the size used to store the thing which they pretend is not a byte offset. Since byte offsets are normally smaller than filenames are allowed to be, the result is ugliness and pathetic kludges. Trust me that you would rather not know about the details of those kludges unless you absolutely have to, and let me say no more>>
+
+<< Can We Get By Using Just Files and Directories
+
+(Composing Streams And Attributes From Files And Directories)?
+
+In Gnu/Linux we have files, directories, and attributes. In NTFS they also have streams. Since Samba is important to Gnu/Linux, there frequently are requests that we add streams to ReiserFS. There are also requests that we add more and more different kinds of attributes using more and more different APIs. Can we do everything that can be done with {files, directories, attributes, streams} using just {files, directories}? I say yes--if we make files and directories more powerful and flexible. I hope that by the end of reading this you will agree.
+
+Let us have two basic objects. A file is a sequence of bytes that has a name. A directory is a name space mapping names to a set of objects "within" the directory. We connect these directory name spaces such that one can use compound names whose subcomponents are separated by a delimiter '/'. What is missing from files and directories now that attributes and streams offer?
+
+In ReiserFS 3, there exist file attributes. File attributes are out-of-band data describing the sequence of bytes which is the file. For example, the permissions defining who can access a file, or the last modification time, are file attributes. File attributes have their own API; creating new file attributes creates new code complexity and compatibility issues galore. ACLs are one example of new file attributes users want.
+
+Since in Reiser4 files can also be directories, we can implement traditional file attributes as simply files. To access a file attribute, one need merely name the file, followed by a '/', followed by an attribute name. That is: a traditional file will be implemented to possess some of the features of a directory; it will contains files within the directory corresponding to file attributes which you can access by their names; and it will contain a file body which is what you access when you name the "directory" rather than the file.
+
+Unix currently has a variety of attributes that are distinct from files (ACLS, permissions, timestamps, other mostly security related attributes, ...). This
+is because a variety of people needed this feature and that, and there was no infrastructure that would allow implementing the features as fully orthogonal
+features that could be applied to any file. Reiser4 will create that infrastructure.>> -- а вот и оно! что нужно для VCS.
+кстати, в Солярке же openat() родился, идея кажется в точности такая же, #todo перечитать её маны
+
+<< List Of Features Needed To Get Attribute And Stream Functionality From Files And Directories
+*    api efficient for small files
+*    efficient storage for small files
+*    plugins, including plugins that can compress a file serving as an attribute into a single bit
+*    files that also act as directories when accessed as directories
+*    inheritance (includes file aggregation)
+*    constraints
+*    transactions
+*    hidden directory entries 
+Each of these additional features is a feature that would benefit the filesystem. So we add them in v4.>> -- и это же нужно в любой системе контроля версий.
+===
+21.03.24
+<<Procrastination Leads To Wiser Decisions: Allocate on Flush>>
+
+Vadim Goncharov, [21 Mar 2024 18:17:14]
+https://habr.com/ru/articles/559014/ о, вот то интервью, откуда цитата в нашем стикерпаке
+
+Vadim Goncharov, [21 Mar 2024 18:18:27]
+> По HAMMERу: читал статью от создателя. Не заинтересовало. Опять же, B-деревья. Эта структура данных безнадёжно устарела. Мы отказались от неё ещё в прошлом веке.
+
+но как, если в Reiser4 тоже дерево?
+
+Vadim Goncharov, [21 Mar 2024 18:23:58]
+> Операция добавления устройства C не откатилась, и если вы сейчас удалите устройство C из компьютера, то это закорраптит ваши данные, так что перед удалением вам нужно будет сначала провести дорогостоящую операцию удаления устройства из логического тома с перебалансировкой, которая раскидает все данные с устройства C на устройства A и B. А вот если бы ваша ФС поддерживала глобальные снимки, такая перебалансировка бы не потребовалась, и после моментального отката к S вы бы могли смело удалить устройство C из компьютера
+
+занятно
+
+Yuri Myasoedov, [21 Mar 2024 18:25:45]
+C-деревья?
+
+Vadim Goncharov, [21 Mar 2024 18:26:49]
+> Следующее, чему стоит поучиться локальным ФС у сетевых - это хранить метаданные на отдельных устройствах точно так же, как сетевые ФС хранят их на отдельных машинах (так называемые метадата-серверы). Есть приложения, работающие в основном с метаданными, и эти приложения можно значительно ускорить, разместив метаданные на дорогостоящих высокопроизводительных накопителях. Со связкой ФС+LVM проявить такую избирательность вам не удастся: LVM не знает, что там на блоке, который вы ему передали (данные там или же метаданные). От реализации в ФС собственного низкоуровневого LVM большого выигрыша по сравнению со связкой ФС+LVM вы не получите, а вот что у вас получится очень хорошо - так это захламить ФС так, что потом станет невозможно работать с её кодом. ZFS и Btrfs, поспешившие с виртуальными девайсами, - это всё наглядные примеры того, как layering violation убивает систему в архитектурном плане.Итак, к чему я всё это? Да к тому, что не нужно городить в файловой системе свой собственный низкоуровневый LVM. Вместо этого нужно агрегировать устройства в логические тома на высоком уровне, как это делают некоторые сетевые ФС с разными машинами (storage nodes). Правда, делают они это отвратительно по причине применения плохих алгоритмов.
+
+всех обосрал!
+
+Vadim Goncharov, [21 Mar 2024 18:27:18]
+я подозреваю, что речь о B-tree vs B+tree vs B*tree
+
+Vadim Goncharov, [21 Mar 2024 18:46:36]
+Если говорить только в терминах интерфейсов и плагинов (модулей), которые их реализуют, то не всё. Но если ввести ещё и отношения на этих интерфейсах, то помимо всего прочего у вас возникнут понятия высших полиморфизмов, которыми уже можно обойтись. Представьте, что вы гипотетически заморозили объектно-ориентированную систему времени выполнения, поменяли значение instruction pointer, чтобы он указывал на другой плагин, который реализует тот же интерфейс X, а потом разморозили систему, так чтобы она продолжила выполнение. Если при этом конечный пользователь не заметит такой "подмены", то мы говорим, что система обладает полиморфизмом нулевого порядка в интерфейсе X (или система гетерогенна в интерфейсе X, что то же самое). Если теперь у вас не просто набор интерфейсов, а ещё имеются и отношения на них (граф интерфейсов), то можно ввести полиморфизмы и более высоких порядков, которые будут характеризовать гетерогенность системы уже в "окрестности" какого-либо интерфейса. Такую классификацию я когда-то давно ввёл, но опубликовать, к сожалению, так и не получилось. Так вот, при помощи плагинов и таких вот высших полиморфизмов можно описать любую известную фичу, а также "предсказать" те, которые никогда даже не упоминались. Строго доказать это мне не удалось, но и контрпримера я тоже пока не знаю. Вообще, вопрос этот напомнил мне "Эрлангенскую Программу" Феликса Клейна. Он в своё время пытался представить всю геометрию разделом алгебры (конкретно, теории групп).
+
+Vadim Goncharov, [21 Mar 2024 18:49:09]
+И, наконец, появились гетерогенные логические тома, предлагающие всё то, чего ZFS, Btrfs, block layer, а также связки FS+LVM в принципе дать не могут - это параллельное масштабирование, O(1)-аллокатор дисковых адресов, прозрачная миграцией данных между подтомами. Для последней также имеется пользовательский интерфейс. Теперь наиболее "горячие" данные вы без труда можете переместить на самый высокопроизводительный накопитель вашего тома. Кроме того, имеется возможность экстренно сбрасывать на такой накопитель любые грязные страницы, и, тем самым, значительно ускорить приложения, часто вызывающие fsync(2). Отмечу, что функциональность block layer, называемая bcache, совершенно не предоставляет такой свободы действий. Новые логические тома основаны на моих алгоритмах (есть соостветствующие патенты). Софт уже достаточно стабилен, вполне можно попробовать, замерить производительность и т.п. Единственное неудобство - пока нужно вручную обновлять конфигурацию тома и где-то ёё хранить.
+
+Реализовать свои задумки мне удалось пока что процентов на 10. Однако, удалось то, что я считал наиболее трудным - это "подружить" логические тома с флаш-процедурой, которая выполняет все отложенные действия в reiser4. Это всё пока в экспериментальной ветке "format41".
+
+— Проходит ли Reiser4 тесты xfstests?
+
+По крайней мере, у меня прошла, когда я готовил последний релиз.
+
+Vadim Goncharov, [21 Mar 2024 18:49:54]
+> случае провала проверки контрольной суммы какого-либо блока Reiser4 немедленно считывает соответствующий блок с девайса-реплики. Заметьте, что ZFS и Btrfs так не могут: не позволяет дизайн. Там вы должны запустить специальный фоновый сканирующий процесс под названием "скраб" и ждать, когда он доберётся до проблемного блока. Такие мероприятия программисты образно называют "костылями".
+
+бля, ну это пиздёж, скруб в zfs делает не это
+
+Vadim Goncharov, [21 Mar 2024 18:50:52]
+— Если с Reiser4 в Linux'е так ничего и не получится, хотелось бы предложить ФС для FreeBSD (цитата из прошлого интервью: «…FreeBSD … имеет академические корни… А это означает, что с большой долей вероятности мы найдём с разработчиками общий язык»)?
+
+Итак, как мы только что выяснили, с Линуксом у нас всё уже прекрасно получилось: под него есть отдельный работающий порт Reiser4 в виде мастер-бранча нашего репозитория. Про FreeBSD я и не забыл! Предлагайте! Готов плотно поработать c теми, кто хорошо знает внутренности FreeBSD. Кстати: что мне очень нравится в их сообществе - там решения принимаются обновляемым советом независимых экспертов, не имеющим ничего общего с губонадувательством одной бессменной персоны.
+
+Vadim Goncharov, [21 Mar 2024 18:53:32]
+он не хочет:
+
+В апстриме давно уже нет никакого развития файловых систем. Создаётся лишь видимость такового. Разработчики локальных ФС упёрлись в проблемы связанные с неудачным дизайном. Здесь нужно сделать оговорку. Т.н "хранение", "вылизывание" и портирование кода я за развитие и разработку не считаю. А недоразумение под названием "Btrfs" к разработкам не причисляю по причинам, которые я уже объяснил. Каждый патч лишь усугубляет её проблемы. Ну, и всегда находятся разного рода "евангелисты", у которых "всё работает". В основном, это школьники и студенты, прогуливающие лекции. Вы только представьте: у него работает, а у профессора нет. Это какой же выброс адреналина! Наибольший же вред с моей точки зрения приносят "умельцы", бросившиеся с энтузиазмом "привинчивать" чудо-фичи Btrfs к всевозможным прослойкам типа systemd, docker, и т.п. - это уже напоминает метастазы.
+
+Давайте теперь попробуем сделать прогноз на пять-десять лет. Что мы будем делать в Reiser4 я вкратце уже перечислил. Основным вызовом для разработчиков локальных ФС из апстрима станет (да, уже стало) невозможность заниматься приличным делом за зарплату. Без каких-либо идей в области хранения данных они будут продолжать пытаться патчить эти несчастные VFS, XFS и ext4. Особенно комично на этом фоне выглядит ситуация с VFS, напоминающая остервенелую модернизацию ресторана в котором поваров нет, и не предвидится. Теперь код VFS безо всяких условий залочивает одновременно несколько страниц памяти и предлагает нижележащей ФС оперировать над ними. Это было введено для повышения производительности Ext4 на операциях удаления, но, как нетрудно понять, такой одновременный лок совершенно несовместим с продвинутыми транзакционными моделями. То есть, добавить поддержку какой-то умной ФС в ядре вы уже просто так не сможете. Я не знаю, как дело обстоит в остальных областях Linux, но что касается файловых систем, какое-либо развитие здесь вряд ли совместимо с политикой, проводимой Торвальдсом на деле (академические проекты изгоняются, а мошенникам, не имеющим понятия, что такое B-дерево, выдаются бесконечные кредиты доверия). Поэтому тут был взят курс на медленное загнивание. Его, конечно же, изо всех сил будут пытаться выдать за "развитие". Далее, "хранители" файловых систем, поняв, что на одном лишь "хранении" много не заработаешь, будут пробовать себя в более прибыльном бизнесе. Это, как правило, распределенные файловые системы и виртуализация. Возможно, куда-то ещё будут портировать модную ZFS там, где её ещё нет. Но она, как и все ФС из апстрима, напоминает новогоднюю ёлку: если сверху ещё что-то из мелочи повесить можно, то глубже уже не подлезешь. Я допускаю, что построить серьёзную энтерпрайз-систему на базе ZFS можно, но поскольку мы сейчас обсуждаем будущее, то мне остаётся с сожалением констатировать, что ZFS в этом плане безнадёжна: своими виртуальными девайсами ребята перекрыли себе и будущим поколениям кислород для дальнейших разработок. ZFS - это вчерашний день. А ext4 и XFS - уже даже не позавчерашний.
+
+Vadim Goncharov, [21 Mar 2024 18:53:32]
+Отдельно стоит сказать про нашумевшее понятие "Linux file system of next generation". Это полностью политический и маркетинговый проект, созданный для возможности, так скажем, "столбить будущее файловых систем" в Linux за конкретными персонажами. Дело в том, что это раньше Linux был "just for fun". А сейчас это прежде всего машина для зарабатывания денег. Они делаются на всём, на чём только можно. К примеру, создать хороший программный продукт очень трудно, но смышленые "разработчики" давно уже сообразили, что напрягаться-то вовсе и не нужно: успешно продавать можно и несуществующий софт, анонсированный и распиаренный на всевозможных публичных мероприятиях - главное, чтобы в презентационных слайдах было побольше "фич". Файловые системы подходят для этого как нельзя лучше, ибо на результат можно смело выторговывать лет десять. Ну, а если кто-то потом будет сетовать на отсутствие этого самого результата, то он же в файловых системах просто ничего не смыслит! Это напоминает финансовую пирамиду: на вершине располагаются заварившие эту кашу авантюристы, и те немногие, кому "повезло": они "сняли дивиденды", т.е. получили деньги на разработку, устроились менеджерами на высокооплачиваемую работу, "засветились" на конференциях, и т.п. Далее идут те, кому "не повезло": они будут подсчитывать убытки, расхлебывать последствия развертывания в продакшн непригодного программного продукта ", и т.д. Их гораздо больше. Ну, и в основании пирамиды - огромная масса разработчиков, "пилящих" никчёмный код. Они - в самом большом проигрыше, ибо впустую потраченное время не вернёшь. Такие пирамиды чрезвычайно выгодны Торвальдсу и его приближенным. И чем этих пирамид больше - тем для них лучше. Для подпитки таких пирамид в ядро может быть принято всё что угодно. Разумеется, на публике они утверждают обратное. Но я сужу не по словам а по поступкам.
+
+Так что, "будущее файловых систем в Линукс" - это очередной сильно распиаренный, но мало пригодный к использованию софт. После Btrfs с большой вероятностью место такого "будущего" займёт Bcachefs, представляющая собой ещё одну попытку скрестить Linux block layer с файловой системой (дурной пример заразителен). И что характерно: там те же проблемы, что и в Btrfs. Я давно это подозревал, а потом как-то не удержаляся и заглянул в код - так и есть! Авторы Bcachefs и Btrfs, создавая свои ФС, активно пользовались чужими исходниками, мало что в них понимая. Ситуация очень напоминает детскую игру "испорченный телефон". И я примерно представляю, как будет происходить включение этого кода в ядро. Собственно "грабли" никто не увидит (на них все будут наступать потом). После многочисленных придирок к стилю кода кода, обвинению в несуществующих нарушениях, и пр. будет делаться заключение о "лояльности" автора, о том, насколько он хорошо "взаимодействует" с остальными разработчиками, и как успешно всё это потом можно будет продавать корпорациям. Конечный же результат никого не заинтересует. Лет двадцать назад, может быть, бы и заинтересовал, но сейчас вопросы ставятся по-другому: получится ли это раскрутить так, чтобы ближайший десяток лет определённые люди оказались трудоустроены. А задаваться вопросом о конечном результате, увы, не принято.
+
+-- отсюда вывод: выносить sqlite-базы наружу раздела при возможности, и только для
+случая внутри - делать мини-файловую систему, видимо по принципу аллокации
+цилиндр-групп
+
+Посмотрел в sys/ufs/ffs/fs.h, CGSIZE() занимает максимум 1 блок - внутри
+битовые карты inode и данных, дальше идут сами иноды. Тогда, если хардкодим
+блок mini-fs в 4096 т.е. 1 бит на 4096 байт данных в битмапе, тогда отсеки
+compartments/cylinder groups размера 64 Мб (2^26): это было бы 2048 байт на
+2^14 блоков по 4k максимум, но еще отводим битмап на MFT, которая будет типа
+вместо инод, тогда она может занять до 8 Мб если бы все 2048 байт, и еще на
+XOR-сектора надо оставить... или их пускай уже в data free bitmap?
+Но главное снаружи экстенты по 64 Мб, а внутри можно собственную адресацию, но
+как быть с малыми fs? делать переменного размера, допустим до 100 Мб за счет
+меньше на MFT - но тогда вычисление оффсета внутри станет зависимым от
+указателей из внешнего тома...
+
+нужно посчитать, сколько максимум может занимать MFT, т.е. экстенты при
+максимальной фрагментации - если max 2^56 блоков, то по 8 байт на блок?
+а еще размер в секторе, если двусвязный список всех листьев делать...
+===
+22.03.24
+struct cg {
+	uint32_t cg_magic;		/* magic number */
+	uint32_t cg_cgx;		/* we are the cgx'th cylinder group */
+	uint16_t cg_niblk;		/* number of MFT blocks this cg */
+	uint16_t cs_nifree;		/* number of free inodes */
+	uint32_t cg_ndblk;		/* number of data blocks this cg */
+	uint32_t cs_nbfree;		/* number of free blocks */
+	uint16_t cg_freeoff;		/* (u_int8) free block map */
+	uint8_t  cg_iusedoff;		/* (u_int8) used MFT map */
+	uint8_t  cg_extmftoff;		/* MFT record extending CG struct, if >0 */
+	uint64_t cg_time_ckhash;	/* time last written / check-hash of this cg */
+	uint8_t cg_space[1];		/* space for free maps & future use */
+/* actually longer */
+};
+-> 32 bytes
+
+- с биткартой MFT не влезает, блин
+
+- можно сделать запись в MFT с битмапом MFT, но тогда максимальный размер
+  блока 32768:
+(65536-32)/65 = 1007.75384615384615384615
+1007*64*8 = 515584
+1007*64*8*65536/1048576 = 32224.00000000000000000000
+1007*8*512/1048576 = 3.93359375000000000000
+32768*8*32768/1048576 = 8192.00000000000000000000
+(32768-32)/65 = 503.63076923076923076923
+===
+25.03.24
+можно сделать блоки и меньше 4096, если MFT-записи нумеровать не с самых
+первых, а самые первые оставить на:
+1) битмап
+2) XOR-сектор MFT в этом отсеке
+3) от 2 до 4 секторов на журнал?
+4) возможные 1-2 сектора расширения вместо целого байта cg_extmftoff?
+===
+26.03.24
+если поднять размер MFT-записи только до 1 Кб, то сложности с NTFS-стилем
+sequence number updates array можно избежать - первая в начале первого
+сектора, вторая в конце второго, и пространство между ними непрерывно тогда
+===
+27.03.24
+расчеты выше по 64+1 неверны, надо так: для блока 2^B байт в отсеке может
+уместиться 2^(B+3) блоков = 2^(2*B+3) байт размер отсека, и они требуют по
+8 байт MFT на 1 блок, т.е. 1 блок MFT может описать 2^(B-3) блоков данных
+=> 2^(B+3) / 2^(B-3) = 64 блока (размером 2^B) MFT независимо от размера отсека
+
+04.04 можно ж не е**ть мозги дотягиванием до 128 Мб и так и оставить 126 Мб 264 Кб,
+из них 256 Кб на MFT (256 бит по 1 Кб), 1 заголовочный, 1 XOR-блок
+===
+28.03.24
+формат префикса адреса: 24328xxxhash...
+2 цифры - год
+1 символ - месяцы 1-9 или o=Oct, s=Nov (Scorpio), w=Dec (Winter)
+2 цифры дата
+как закодировать время, и нужно ли? тип хэш функции остального адреса? бранч?
+ну в принципе бранч допустим одну букву даже, а если цифра - то тип артефакта,
+например тикет или wiki?
+вообще тип хэша можно по https://github.com/multiformats/multihash вынести
+в него самого, а вот кодировать ли размер прямо в линке? типа 123m 2^64 ~5018 кодов
+-> для коммитов пожалуй нет, его может быть сложно посчитать, а для конечных
+   блобов всё равно другой формат, не этот
+
+RFC 6920 https://www.iana.org/assignments/named-information/named-information.xhtml наверное лучше
+===
+29.03.24
+zfs clones: этому просто соответствуют разные git worktree / fossil open checkouts
+ну. видимо, коммит должен быть по типу манифеста в fossil, где вместо имён
+файлов - пары GUID:version каждого объекта
+Скорость: O(N) от числа файлов/объектов похоже не избежать, но можно сделать
+процесс приемлемо быстрым, если каждая инода (объект) уже готова: в ней просто
+проставляется линк на коммит, а собственно copy on write случится при
+дальнейшей записи в файл когда-то потом приложением, т.е. надо просто
+постоянно поддерживать иноды в хэшированном состоянии
+То есть worktree/checkout для живых файлов всегда по умолчанию указывает на
+иммутабельные объекты коммита, и лишь по мере записей приложениями эти иноды
+мутабельны, тогда это один и тот же механизм и для rollback'ов выходит
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     | Year % 100  | Month |   Day   |Artifact Type / Branch Checksum|
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+if this is commit, then branch name checksum is taken in base36,
+if this is other object, it's type is encoded as 3 lowercase letters.
+How these are distinguished? See,
+
+36^3 = 46656
+26^3 = 17576
+46656+17576 = 64232
+
+so there 65536 space is divided in two parts and values above 0xfae8 are
+reserved for future use. If Branch Checksum happens to consist of only
+letters, then middle letter is made capital.
+TBD which capital letter looks better / human readable, first? middle? last?
+may be last is better as delimeter of hash?
+
+TBD https://en.wikipedia.org/wiki/DEC_RADIX_50 (MOD40) ?
+
+читал https://rffr.de/wp-content/uploads/manuell/file_systems_usability.pdf (записывал в notes)
+- как решать проблему циклов в секции 3.7? имитировать симлинки?
+- идея с одинаковыми инодами - плохая или наоборот, надо номер хардлинка кодить в ino?
+===
+30.03.24
+dlevel в коммит как dump level - массив ссылок (длина = наш левел) на предыдущие левелы
+с точки зрения удобства синхронизации, удобен WHERE art_id > $last_rcvd тогда лучше запихнуть полное время - чем, NTP?
+- с разными репозиториями проблема, время ж не синхронизировано
+===
+31.03.24
+вопрос UUID - что, если взять версию 8 из https://datatracker.ietf.org/doc/html/draft-ietf-uuidrev-rfc4122bis
+и сунуть Julian day в первые 6 байт?
+sqlite> SELECT julianday('2024-03-31 21:26:08');
+2460401.39314815
+$ perl -e '$a=2460401.39314815;say pack d=>$a' | hexdump -C
+00000000  b7 ad 52 b2 78 c5 42 41                           |..R.x.BA|
+$ perl -E 'say 0x4142c578b252adb7>>52'
+1044
+$ perl -E 'say 0x4142c578b252adb7&(2**53-1)'
+780072131931575
+$ perl -E 'say 0x2c578b252adb7'
+80072131931575
+$ perl -E 'say 0x12c578b252adb7>>(52-(1044-1023))'
+2460401
+sqlite> SELECT julianday('9999-03-31 21:26:11');
+5373209.39318287
+$ perl -e 'print pack d=>5373209.39318287' | hexdump -C 
+00000000  7c e8 29 59 46 7f 54 41                           ||.)YF.TA|
+$ perl -E 'say unpack d=>"\x7c\xe8\x29\x59\x46\x7f\x5f\x41"'
+8256793.39318287
+это ~ 25.03.17894 21:26:11 UTC
+$ perl -E 'say unpack d=>"\x00\xff\xff\xff\xff\xff\x5f\x41"'
+8388607.99999976
+это ~ 16.02.18255 11:59 UTC
+$ perl -E 'say unpack d=>"\x7c\xe8\x29\x59\x46\x7f\xff\x41"'
+8454956434.61926
+-- это более чем 23 миллиона лет
+$ perl -E 'say unpack d=>"\x00\x00\x00\x00\x00\x00\x40\x41"'
+2097152
+-- 10 september 1029 proleptic
+perl -E 'say unpack d=>"\x00\xff\xff\xff\xff\xff\x4f\x41"'
+4194303.99999988
+-- ~ 07.07.6771 
+
+а если в идентификатор коммита тоже время поточнее засунуть?
+26*36^2 = 33696
+365.25*1440*10000/2^32 = 1.22459605336189270019
+365.25*1440*10000-2^32 = 964632704.00
+964632704/1440/365.25  = 1834.04194995817172408548
+т.е. счетчик минут с 1835 до 9999 года влезет в 32 бит
+
+ну или можно оставить Year % 100, добавить 11 бит на HH:MM, а оставшиеся 5 бит
+из 32 поместить в начало - как общий формат, и про время, и про сумму, и про хэш, тогда 6 байт всего удлинение
+
+volume is good word, как всемирная библиотека у фантастов
+еще это напоминает у Telegram файлы - volume_id
+тогда может быть это будет один из вариантов в #***
+а в нём нужно заюзать что-то из фич FreeBSD, а если с нуля fs, то что? дедупликация блоков ZFS ?
+тогда вариантов реализации получается не 2, а 3:
+- полностью внутри raw block device и meta-fs для *.sqlite*
+- *.sqlite* снаружи и raw block device для больших
+- *.sqlite* снаружи и набор файлов на ZFS, которые будут ей дедуплицироваться
+===
+01.04.24
+атрибут имени файла = holding relationship, а в каталоге можно еще reference в другие репы делать, тогда у их файлов не будет атрибута имени
+наследование properties делать только по holding, с фильтрацией по security e.g. между репами
+что, если каталог делать как SQL table? не только имя/линк, но и дата хотя бы? плюс индексы
+Embedding relationships - это уже возня с атрибутом data, составным?
+- нет, это просто массивы relationships, метаданные, это уже дело
+  MIME-хэндлера DATA как их использовать (по индексу?)
+как юзеру показать разницу между reference и embedding? как между `<img src=cat.jpg>` и `<a href=cat.jpg>`
+===
+02.04.24
+таки что делать с распределенными коммитами?
+индексы для коммитов по аналогии с каталогами для файлов? higher-order ("milestone"/release?) commits?
+расширить понятие бранчей?
+
+> *Differences With Other DVCSes*
+> *Single DAG*
+> Fossil keeps all check-ins on a single DAG. Branches are identified with tags. This means that check-ins can be freely moved between branches simply by altering their tags.
+> Most other DVCSes maintain a separate DAG for each branch.
+> *Branch Names Need Not Be Unique*
+> Fossil does not require that branch names be unique, as in some VCSes, most notably Git. Just as with unnamed branches (which we call forks) Fossil resolves such ambiguities using the timestamps on the latest check-in in each branch. If you have two branches named "foo" and you say fossil update foo, you get the tip of the "foo" branch with the most recent check-in.
+> This fact is helpful because it means you can reuse branch names, which is especially useful with utility branches. There are several of these in the SQLite and Fossil repositories: "broken-build," "declined," "mistake," etc. As you might guess from these names, such branch names are used in renaming the tip of one branch to shunt it off away from the mainline of that branch due to some human error. (See fossil amend and the Fossil UI check-in amendment features.)
+
+forrest of Cthulhu? каучконосный фикус? https://pibig.info/uploads/posts/2022-12/1670420927_9-pibig-info-p-fikus-v-prirode-instagram-9.jpg
+в каждом object (UUID) - его собственные именовать ревизиями, он как RCS?
+если коммит ссылается на каталог, а из того пойти по UUID, то будет как git tree?
+- нет, мы же не изменяем каталоги без реального изменения
+- возможно, если ревизии каждого объекта имеют одинаковый адрес с коммитом
+
+> К недостаткам Darcs можно отнести отсутствие виртуальных веток (branches в git). Надо сказать, в сообществе разработчиков до сих пор нет единого мнения, нужны ли они в этой системе вообще. Для введения новых экспериментальных изменений, для которых чаще всего и используются ветки, Darcs создаёт клон репозитория в отдельной директории в файловой системе. После тестирования, этот клон сливается с тем репозиторием, который считается стабильным или готовым к релизу, после чего удаляется, либо остаётся для истории, если идея не пошла дальше эксперимента. Таким образом, ветки не заполняют собой индекс основного репозитория, оставляя его максимально чистым. А обзор «веток» происходит в простом файловом менеджере.
+> Better handling of binary files Darcs can handle binary files but saves each version of a binary file as a complete file, whereas Subversion only stores the diff between versions of a binary. See http://bugs.darcs.net/issue1233 .
+
+если миллиард сообщений в группе, то коммит каждого нового точно не может быть на весь список - это слишком затратно
+значит, бьем директорию/индекс на страницы, допустим дерево побайтно, тогда 8192 займет страница на 256 адресов по 32 байта
+tree у tree? как-то не звучит, надо назвать каталогом что ли может?
+
+> catalog – определения
+> Существительное
+> 1. a complete list of items, typically one in alphabetical or other systematic order.
+
+вполне годится для обобщения, что не только файлы (про folder сказать, что тоже вызовет путаницу, несмотря на историю)
+
+если каталог сообщений ньюсгруппы, не слишком ли короткий тогда GUID? он ведь для мутабельных объектов
+а сообщения иммутабельны, тут редактирование делается control messages, в fossil - P card (parent, как у коммита)
+
+> In theory, it is sufficient for follow-up posts to have only an I card, since the G card value could be computed by following a chain of I cards. However, the G card is required in order to associate the artifact with a forum thread in the case where an intermediate artifact in the I card chain is shunned or otherwise becomes unreadable. 
+> The optional P card specifies a prior forum post for which this forum post is an edit. For display purposes, only the child post is shown, though the historical post is retained as a record. If P cards are used and there exist multiple versions of the same forum post, then I cards for other artifacts refer to whichever version of the post was current at the time the reply was made, but G cards refer to the initial, unedited root post for the thread. Thus, following the chain of I cards back to the root of the thread may land on a different post than the one given in the G card. However, following the chain of I cards back to the thread root, then following P cards back to the initial version of the thread root must give the same artifact as is provided by the G card, otherwise the artifact containing the G card is considered invalid and should be ignored.
+> In general, P cards may contain multiple arguments, indicating a merge. But since forum posts cannot be merged, the P card of a forum post may only contain a single argument. 
+
+- вот по сути похоже на проблему "промежуточные коммиты недоступны"
+
+
+https://fossil-scm.org/home/doc/trunk/www/sync.wiki :
+> 1.1 Conflict-Free Replicated Datatypes
+> The "bag of artifacts" data model used by Fossil is apparently an implementation of a particular Conflict-Free Replicated Datatype (CRDT) called a "G-Set" or "Grow-only Set". The academic literature on CRDTs only began to appear in about 2011, and Fossil predates that research by at least 4 years. But it is nice to know that theorists have now proven that the underlying data model of Fossil can provide strongly-consistent replicas using only peer-to-peer communication and without any kind of central authority.
+> If you are already familiar with CRDTs and were wondering if Fossil used them, the answer is "yes". We just don't call them by that name. 
+
+===
+03.04.24
+как эмулировать чаты, когда у форумов есть только треды, для поддержки моста Telegram? видимо, как ответы на "корневое" сообщение?
+- тогда у него будет число реплаев в индексе расти? сделать индекс
+  специального типа?
+- порядок сообщений? может, права записи только у моста / сабмит как в NNTP на
+  премодерацию? а что, заявить это intentionally slow to motivate for threads
+  - сделать разделение на ordered / unordered chats и объяснить это в FAQ?
+
+HDF5:
+
+Symbol Table - напоминает атомы
+
+> Object Reference Count
+> This value specifies the number of “hard links” to this object within the current file. References to the object from external files, “soft links” in this file and object references in this file are not tracked.
+
+-- подумать насчет holding/embedded relationships
+
+> Creation Order
+> This 64-bit value is an index of the link’s creation time within the group. Values start at 0 when the group is created an increment by one for each link added to the group. Removing a link from a group does not change existing links’ creation order field.
+
+-- может пригодиться?
+
+> Link information
+>
+> The format of this field depends on the link type.
+>
+> For hard links, the field is formatted as follows:
+> Size of Offsets bytes: 	The address of the object header for the object that the link points to.
+>
+> For soft links, the field is formatted as follows:
+> Bytes 1-2: 	Length of soft link value.
+> Length of soft link value bytes: 	A non-NULL-terminated string storing the value of the soft link.
+>
+> For external links, the field is formatted as follows:
+> Bytes 1-2: 	Length of external link value.
+> Length of external link value bytes: 	The first byte contains the version number in the upper 4 bits and flags in the lower 4 bits for the external link. Both version and flags are defined to be zero in this document. The remaining bytes consist of two NULL-terminated strings, with no padding between them. The first string is the name of the HDF5 file containing the object linked to and the second string is the full path to the object linked to, within the HDF5 file’s group hierarchy.
+>
+> For user-defined links, the field is formatted as follows:
+> Bytes 1-2: 	Length of user-defined data.
+> Length of user-defined link value bytes:
+> The data supplied for the user-defined link type.
+
+-- надо ли дополнительные типы линков?
+
+как-то там Fractal Heap и Extensible Array плохо описаны (последний вообще похож на подходящий для MFT или NNTP overview), надо перечитать/PrivateHeap.pdf
+хотя prefix tree для append only может и заменить наверное
+===
+04.04.24
+нашел в https://github.com/jamesmudd/jhdf/blob/920a3f14ccd8177ab881fd19f5f0477ceec60b2f/jhdf/src/main/java/io/jhdf/dataset/chunked/indexing/ExtensibleArrayIndex.java#L237
+ссылку на https://bitbucket.hdfgroup.org/projects/HDFFV/repos/hdf5doc/browse/projects/1_10_alpha/ReviseChunks/skip_lists
+и там https://bitbucket.hdfgroup.org/pages/HDFFV/hdf5doc/master/browse/projects/1_10_alpha/ReviseChunks/skip_lists/SkipListChunkIndex.html
+объясняет, как сначала реверснули скип-листы от tail'а в начало, а потом пришли к массиву
+
+...похоже, оно опирается на то, что размеры блоков можно удваивать сколько угодно
+да и оверхед у не-data блоков, больше степени двойки выходит, по эксельке
+
+блоки разного размера, например верхние индекс-блоки, можно же в специальном файле держать, а-ля как XOR-данные
+
+попробовать Pyramint?
+===
+05.04.24
+если берём в 4 байта Pyramint5 и в старших 27 битах номер CG, тогда Pyramint5 указывает на размер и адрес блока внутри cg
+т.е. 16 блоков по 4K, 8 блоков по 64K ... 1 блок по 64 Мб, всего 128 Мб отсек, и 2^5 = 32 описателя свободного места - чья запись MFT, пусть её адрес тоже укладывается в 4 байта
+ну пусть для Pyramint6 будет 64 адресов на CG, это 256 байт потребного MFT всего
+нулевой блок всегда под мету, на MFT тоже можно ссылаться как номер CG + номер внутри, а делить при желании нечётно, или выделить direct/indirect-блоки
+
+или вообще зачем делить? внутри CBOR вида
+  base => { ... },
+  direct_block => {
+    for_1234 => [],
+  },
+  indirect => ...
+
+хотя нет, ссылки же нужны, значит массив записей, внутри уже тип
+если запись undef, она никогда не была аллоцирована, если тип пустая строка, это FREE, и
+после base txn освобождения и может быть 0+ filler - строки с предыдущим
+содержимым для дебага / ограничения роста других записей
+
+до CBOR его еще надо описать
+struct cg {
+	uint64_t cg_magic;		/* magic number "PBFS\r\n\x1a\n" */
+	uint32_t cg_cgx;		/* we are the cgx'th cylinder group */
+	uint32_t cs_nfree;		/* total free space as number of 512-byte units */
+	uint16_t cg_cborsz;		/* size of CBOR data */
+	uint8_t  cg_cboroff;		/* offset to CBOR in 32-bit words from beginning */
+	uint8_t  cg_sizes;		/* 4:1:3 |adjustP|blkshift| zero add meta blks or last minus blks, Pyramint flavour, log2(block size)-9 */
+	uint32_t cg_cksumhash;		/* checksum hash of entire block */
+	uint64_t cg_time_txn;		/* time last written & transaction number */
+	int32_t  cg_sparecon32[2];      /* reserved for future use */
+	uint8_t cg_space[1];		/* space for free map array & CBOR */
+/* actually longer */
+};
+
+tag256 => в SUPER для компрессии, прописать другие теги (66 и 70 - массив uint32)
+dinode
+#define	UFS_NXADDR	2		/* External addresses in inode. */
+#define	UFS_NDADDR	12		/* Direct addresses in inode. */
+#define	UFS_NIADDR	3		/* Indirect addresses in inode. */
+sys/ufs/ffs/ffs_inode.c:#define SINGLE  0       /* index of single indirect block */
+sys/ufs/ffs/ffs_inode.c:#define DOUBLE  1       /* index of double indirect block */
+sys/ufs/ffs/ffs_inode.c:#define TRIPLE  2       /* index of triple indirect block */
+
+начнём считать максимальное число блоков, пусть Pyramint5 и 4096 блоки, тогда:
+* 2^27 cg * 16 * 4096 = 2^43, еще недостаточно для 2^48
+* добавляем 2^27 * 8 * (16*4096) = 2^46 тоже мало
+* и 2^27 * 4 * (256*4096) = 2^49 уже перебор, т.е. хватит и половины
+  мегабайтных блоков
+= потрачено: 16 блоков по 4K + 8 по 256K + 2 по 1M = 26 блоков
+=> их указатели займут 2^27 * 26 * 4 байт
+оно и так превышает 2^48, но пусть докинем еще 1/128 оверхеда на номер
+страницы в -journal для min размера страницы,
+итого 12800 + 128*5 = 13440 MiB max expected block pointers in MFT
+из всего максимум доступных 2^27 * ~4096 = 512 Gb MFT - ~400 файлов макс. размера
+при общем размере FS 2^27 * 2^27 = 16 Pb
+
+у L и S разный формат: в L сразу адреса, всегда 4 байта, в S надо пару: длина/оффсет и ссылку на номер в MFT
+
+а вообще пусть не S, а I, как у дерева, хотя и списки, просто того же типа на любом уровне выше L
+а париться с первыми записями прямо из - не нужно, т.к. не фиксированный размер позволяет просто создать рядом маленький direct или indirect да и всё
+  D => { first => 1234, last => 6789, second_ofs => 0x123400 },
+  I => [
+    { first => 234, last => 567, second_ofs => 0x123400 },
+    { first => 345, last => 678, second_ofs => 0x234500 },
+  ],
+===
+06.04.24
+following HDF5 signature, make it invalid for text files - UTF-8 and UTF-16 in
+both endianness and alignments: "\xD8\D8\xFE\xFE\x01\xD8\D8\xFE\xFEPMFT", where \01 is major version 1
+всё-таки сделать иноды и каталоги? fuse хочет, да и если /boot на него?
+тогда посмотреть на его объемы - ls -R почти 2000 файлов, это в 4 Кб не влезет
+значит связный список, DIRF для первого и DIRE для дальше, внутри массив чтобы смещение для getdents можно было проще в отличие от мапа
+d_type можно закодировать в верхние 4 бита CG number, всё равно много файлов не требуется:
+#define	DT_UNKNOWN	 0
+#define	DT_FIFO		 1
+#define	DT_CHR		 2
+#define	DT_DIR		 4
+#define	DT_BLK		 6
+#define	DT_REG		 8
+#define	DT_LNK		10
+#define	DT_SOCK		12
+#define	DT_WHT		14
+
+/*
+ * Convert between stat structure types and directory types.
+ */
+#define	IFTODT(mode)	(((mode) & 0170000) >> 12)
+#define	DTTOIF(dirtype)	((dirtype) << 12)
+директории же нельзя shrink на ходу из-за оффсета в getdirentries... карта свободных? список?
+если вернуть имена в саму иноду, то директория просто массив номеров инод, без пар, мало места
+если pbmfs монтируется в отдельный раздел, то блочный файл (raw device) занят
+её драйвером - тогда все gaps между cg отвести в специальный файл без указателей (любой оффсет рассчитывается по инфе)
+это для fuse, для перформанса там может быть geom вместо такого файла через драйвер, например
+$MFT 0
+$MFTMirr 1
+$LogFile 2
+$Volume 3
+$AttrDef 4
+. (Root Directory) 5
+$Bitmap 6
+$Boot 7
+$BadClus 8
+$Secure 9
+$UpCase 10
+$Extend 11
+===
+07.04.24
+нет, наверное свободную запись всё же просто [] и filler только для RESERVED,
+иначе свободное место просто по cg_cborsz посчитать будет сложно, предыдущее
+содержимое можно в хвост записи, или может лучше в rollback journal?..
+формат журнала: 4 Кб заголовок/индекс, потом текущий XOR MFT, потом прошлый XOR MFT, потом страницы журнала, сколько хватит индекса,
+потом XOR-сектора каждого защищаемого файла и по XOR-группе секторов для этого файла на каждый отсек
+по аналогии с https://www.sqlite.org/fileformat2.html#the_rollback_journal нужно нонс, чексумму каждой страницы
+кольцевой буфер? тогда еще txn для каждой страницы указать надо... и нонс для каждого txn?
+надо подогнать так, чтоб выделить ровное число сразу, 2 или 4 Мб, а остаток заголовка - MFT-номера защищаемых файлов
+а зачем чексумму для каждой страницы отдельно? она же у нас есть в формате меты, в отличие от sqlite,
+тогда индекс нужен только по txn каждой страницы (чтобы не читать их) и поля current txn и last ok tsn?
+использовать в качестве txn полные 64 бита, включая таймштамп?
+головная боль подогнать размер, чтоб минус заголовок и сумма ровная была, сколько ж тогда на recovery файлы останется...
+чтобы не возиться с recovery пофайлово на каждый отсек, может просто сделать parity compartments?
+младшие 5 бит номера - как индикатор/указатель расположения parity cg?
+почитал код graid3, там логический сектор состоит из секторов всех data-дисков, поэтому и 2^n+1 дисков - это совсем другой алгоритм
+а еще же надо как-то детектировать stale XOR... чексуммы для блоков тогда?
+у ZFS вариации Fletcher2 и Fletcher4 совсем не как в https://en.wikipedia.org/wiki/Fletcher's_checksum - а 32 байта без модулей
+в 4 Кб и двухбайтные-то влезут лишь при очень большой полосе, не вариант
+следующая идея: уполовинить размер parity CG, ведь XOR же пофиг сколько их - т.е. для 128 Мб cg, в 64 Mb-блоке лежат XOR, для половин каждого data cg
+тогда для каждого 4 Кб XOR-сектора можно парный ему сектор - с чексуммами и таймштампами его и всех data-секторов всех защищаемых CG
+в первых 4 Кб соответственно для меты тоже, чем она хуже... но нужен ли битмап инициализированных блоков?
+для ровного можно 64 байта сделать: таймштамп, номер cgx + его половина (1 бит хватит?), id алгоритма, reserved и остаток хватит и для SHA-384
+тогда compartment и cylinder group таки разные понятия - отсек есть несколько cg возле одной с parity
+нет, не 1 бит, а полные адреса блоков для чексумм - мы же, возможно, храним скажем через 3 отсека, дать возможность выбора алгоритмов
+может кстати для gap между cg, то есть $Volume файла, тоже дать эту защиту... сколько бит адреса дать?
+тогда же можно и growfs сделать на несколько дисков, с одновременным как бы raidz1 - fs превращается в zpool...
+или нет, если вынуть один диск, его gaps потеряются...
+или да, но он должен целиком состоять из parity cg без gaps... тогда всё становится не просто с last cg
+нет, для вынимания диска нужно XOR в его полном объеме, а тут только половина cg
+===
+09.04.24
+с прямыми ссылками на диск понятно, а вот на другие записи меты... 27 бит + 5 бит + 44 бит - неровно и много
+с индексными блоками наверху некрасиво - длину скомпрессить бы, а то 2^32 секторов не хватит на полную базу
+и если пусть 8 байт/килобайт, 7 бит на уровень - много, это 7 disk accesses для полного файла?..
+плюс поиск свободных номеров меты, да и куски меты по 4 - бить неудобно для тех же каталогов...
+возникла идея - а что, если оставить адрес по 27 бит + 5 номер/размер внутри, но вынести мету отдельно?
+тогда и номера блоков будут использованы полностью все 32, без возни с размером начального сектора для MFT
+так как оно большое, объединить сразу с XOR-блоками в верхней половине?
+тогда при 1 записи в 4 Кб, возвращаемся к старым цифрам: из 32768 бит вычитаем 64 байта, получается 126 Мб MFT
+2 Мб пускаем на Journal, на карты владения - 2^20 по 128 байт на цилиндр на Pyramint5 = 8192 cylinders per CG
+еще надо несколько блоков на summary по free и на compartments - XOR-цилиндры каждые N цилиндров
+где делать gaps? между compartments?
+наверное да, и начинать compartment с XOR-цилиндра, т.к. в нём есть сигнатура (для поиска между gaps при починке)
+начал читать про XFS: https://mirrors.edge.kernel.org/pub/linux/utils/fs/xfs/docs/xfs_filesystem_structure.pdf
+The di_next_unlinked value in the inode is used to track inodes that have been unlinked (deleted) but are still
+open by a program. When an inode is in this state, the inode is added to one of the AGI’s agi_unlinked hash
+buckets. The AGI unlinked bucket points to an inode and the di_next_unlinked value points to the next inode
+in the chain. The last inode in the chain has di_next_unlinked set to NULL (-1).
+Once the last reference is released, the inode is removed from the unlinked hash chain and di_next_unlinked
+is set to NULL. In the case of a system crash, XFS recovery will complete the unlink process for any inodes found in
+these lists.
+The only time the unlinked fields can be seen to be used on disk is either on an active filesystem or a crashed system.
+A cleanly unmounted or recovered filesystem will not have any inodes in these unlink hash chains.
+
+-- вот в специальный файл их засунуть...
+
+rc_startblock
+AG block number of this record. The high bit is set for all records referring to an extent that is being used to
+stage a copy on write operation. This reduces recovery time during mount operations. The reference count of
+these staging events must only be 1.
+
+-- а вот это уже для основной sqlite fs
+
+di_projid
+Specifies the owner’s project ID in v2 inodes. An inode is converted to v2 if the project ID is set. This value
+must be zero for v1 inodes.
+di_projid_hi
+Specifies the high 16 bits of the owner’s project ID in v2 inodes, if the XFS_SB_VERSION2_PROJID32BIT
+feature is set; and zero otherwise.
+
+-- у них это для квоты, но может для репы тоже сгодится...
+
+di_changecount
+Counts the number of changes made to the attributes in this inode.
+===
+10.04.24
+typedef uint32_t pbmft_no_t;
+typedef uint32_t pbmfs_daddr_t;
+typedef uint64_t pbmft_extentr_t; /* 35 bit sum (S_BLKSIZE), 29 bit MFT no */
+
+/* Four 6-byte inode times:                                      */
+/*	mft_time_t	di_atime;	 Last access time.       */
+/*	mft_time_t	di_mtime;	 Last modified time.     */
+/*	mft_time_t	di_ctime;	 Last inode change time. */
+/*	mft_time_t	di_birthtime;	 Inode creation time.    */
+typedef uint8_t  pbmfs_itimes_t[24];
+
+struct mft_record_head {
+	uint32_t magic;
+	uint16_t flagsizes;	/* 2:generation, 2:FixedSz, 12:VarSz, both 0 in free */
+	uint16_t txn;		/* in which transaction written */
+	uint32_t checksum;	/* entire page, including free space */
+} /* 12 bytes */
+
+struct mft_inode_common {
+	uint16_t	di_mode;	/*  12: IFMT, permissions; see below. */
+	uint16_t	di_freelink;	/*  14: Next unlinked inode in this CG. */
+	uint32_t	di_uid;		/*  16: File owner. */
+	uint32_t	di_gid;		/*  20: File group. */
+	uint32_t	di_flags;	/*  24: Status flags (chflags). */
+	pbmfs_itimes_t	di_times;	/*  28: Four 6-byte times */ 
+	pbmft_no_t	di_extattr;	/*  52: Reserved for future use */
+}
+
+struct mft_file {
+	struct mft_record_head	mft_head; /* "FILE" */
+	struct mft_inode_common inode_common;
+	uint64_t	di_size;	/* 56: File byte count. */
+	uint64_t	di_blocks;	/* 64: Blocks actually allocated, S_BLKSIZE units */
+	pbmfs_daddr_t	di_parity_blk;	/* Overall parity block, if present. */
+	uint32_t	di_spare[5];	/* Reserved; currently unused */
+	char		di_cbor[4000];	/* Variable attributes part */
+}
+
+/* Because 640K of SQLite databases ought to be enough for everyone! */
+#define MFT_NLDIRECS	645		/* 640*1024/((4096-32)/4) */
+#define MFT_NHDIRECS	40		/* 640*1024-655320 */
+struct mft_dirbase {
+	struct mft_record_head	mft_head; /* "DIRB" */
+	struct mft_inode_common inode_common;
+	uint64_t	dirb_counters;	/* Bit fields:
+		20 bits	dirb_totalfree;  Total free entries in directory 
+		20 bits	dirb_totalalloc; Total allocated entries in directory 
+		6 bits 	dirb_freecount;	 Number of free entries in this record 
+		6 bits	dirb_thisalloc;	 Integrity checking: entries this record
+		10 bits	dirb_nrecords;	 Total number of MFT records for this directory */
+	int16_t		dirb_nchildir;	/* To fake di_nlink of ".."'s */
+	uint16_t	dirb_leaffree[MFT_NLDIRECS]; /* N free entries in each leaf */
+	pbmft_no_t	dirb_dentries[MFT_NHDIRECS]; /* entries directly in head */
+	pbmft_no_t	dirb_leaves[MFT_NLDIRECS]; /* MFT record numbers of leaves */
+}
+
+struct mft_dirl {
+	struct mft_record_head	mft_head; /* "DIRL" /*
+	pbmft_no_t	dirb_base;	/* 12: MFT directory base record */
+	pbmft_no_t	dirb_next;	/* 16: MFT number of next record in list */
+	pbmft_no_t	dirb_prev;	/* 20: MFT no of previous record in list */
+	uint16_t	dirb_freecount;	/* 24: Number of free entries in this record */
+	uint16_t	dirb_thisalloc;	/* 26: Integrity checking: entries this record */
+	uint16_t	dirb_spare[2];	/* 28: Reserved; currently unused */
+	pbmft_no_t	dirb_dentries[1016]; /* entries of this record */
+}
+
+struct mft_addrl {
+	struct mft_record_head	mft_head; /* "ADRL" /*
+	uint32_t	adrl_spare1;    /* 12: Reserved for alignment */
+	uint64_t	adrl_offset;	/* 16: Logical offset in file */
+	uint64_t	adrl_size;	/* 24: Sum size of all entries in this record */
+	pbmft_no_t	adrl_base;	/* 32: MFT inode base record */
+	pbmft_no_t	adrl_next;	/* 36: MFT number of next record in list */
+	pbmft_no_t	adrl_prev;	/* 40: MFT no of previous record in list */
+	pbmft_no_t	adrl_parent;	/* 44: MFT no of parent (I) node */
+	uint32_t	adrl_spare[4];  /* 48: Reserved; currently unused */
+	pbmfs_daddr_t	adrl_entries[1008]; /* entries of this record */
+}
+
+struct mft_addri {
+	struct mft_record_head	mft_head; /* "ADRI" /*
+	uint32_t	adri_spare1;    /* 12: Reserved for alignment */
+	uint64_t	adri_offset;	/* 16: Logical offset in file */
+	uint64_t	adri_size;	/* 24: Sum size of all entries in this record */
+	pbmft_no_t	adri_base;	/* 32: MFT inode base record */
+	pbmft_no_t	adri_next;	/* 36: MFT number of next record in list */
+	pbmft_no_t	adri_prev;	/* 40: MFT no of previous record in list */
+	pbmft_no_t	adri_parent;	/* 44: MFT no of parent (I) node */
+	uint32_t	adri_spare[4];  /* 48: Reserved; currently unused */
+	pbmft_extentr_t	adri_entries[504]; /* entries of this record */
+}
+
+...а checksum-то забыл! придется di_gen перенести в 2 бита в заголовке
+и di_freelink сделать 2-байтным - только на одну CG...
+
+Идея для уровня повыше: slab-аллокатор как UMA в ядре - для attribute tails
+> For the following computations, let U be the usable size of a database page, the total page size less the reserved space at the end of each page. And let P be the payload size. In the following, symbol X represents the maximum amount of payload that can be stored directly on the b-tree page without spilling onto an overflow page and symbol M represents the minimum amount of payload that must be stored on the btree page before spilling is allowed. 
+> M is always ((U-12)*32/255)-23.
+
+u=4096
+((u-12)*32/255)-23
+489.50196078431372549019
+u=1024
+((u-12)*32/255)-23
+103.99607843137254901960
+
+- похоже не требуется, достаточно отдельную sqlite-базу со страницей побольше...
+хотя не совсем, их же размер может скакать при ребалансировке
+-> просто сделать пачку таблиц типа bucket_400, bucket_420 ? тогда надо
+   сквозной id, отдельная таблица с референсом на владельца, а в этих просто
+   (rowid, blob)
+
+volmap => [
+    {
+	offset => 0x0,
+	length => 65536,
+	type   => GAP,
+    },
+    {
+	offset => 65536,
+	length => 128*1048576,
+	type   => MFT,
+    },
+],
+===
+11.04.24
+если rollback journal делать по принципу sqlite, мы же не контролируем данные
+файлов, не будет ли рассогласования, если откат транзакции меты, а данные
+файлов изменились?
+
+> SQLite assumes that when data is appended to a file (specifically to the rollback journal) that the size of the file is increased first and that the content is written second. So if power is lost after the file size is increased but before the content is written, the file is left containing invalid "garbage" data
+
+-- so for MFT to be able to use same rollback journal technique, the write() of data
+after a seek() extending a file must not return until MFT transaction is committed
+
+отнимать от Pyramint5 имеет смысл только последние 4 блока максимум?
+оно неровное, 11011 значит 1024, но находится на уровне 256, т.е. это 1280 блоков
+а следующий 11100 для 2048, это непокрытое место что ли?
+похоже, длины экстентов будут неровными по уровням - считать сам Pyramint как смещение, а  длину нужно вычитать из следующего смещения,
+появляются дополнительные размеры - 1 по 128, 1 по 1024, а по 16 всего 7, и по 256 всего 3
+т.е. массив счетчиков free summary { 1, 16, 128, 256, 1024, 2048, 4096, 8192, 16384 } на 9 элементов
+===
+13.04.24
+карта volmap как набор uint64_t, первый всегда смещение, 62 бита, в верхних type:
+00 - следующий просто длина gap
+01 - два слова uint32_t: 
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |Blksh-9|P|Flags|DecremB|Typ|CompartSz|      Repeat Count       |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |            Following Upper-Layer Gap Length                   |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+---
+array of uint32_t's as micro-CBOR: on top level, offset word(s):
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |S|L|                      Offset Low part                      |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |              Offset High part, present if L is set            |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+if S is 0, then this word is offset (mnem 0 for O), else Structured
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |1|Major|                                                       \
+     +-+-+-+-+      Structured type, one or more words               /
+     \                                                               \
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+for Major type 0, it is just Gap length:
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |1|  0  |          Following Upper-Layer Gap Length             |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+Major types 2 to 7 is array of Major-1 elements (like CBOR), with the
+following additional information for compression:
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |1| 2-7 |     Repeat Count      | Shift |    UL Gap Length      |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+if Repeat Count > 0, then additional Gap field, if non-zero is inserted
+between repetitions - intra-elements, like `join(gap, body)` function.
+
+Shift means actual_gap = gap_length << shift, so values up to 0xfff80 can be
+encoded (in 512-sectors, 512 Mb minus 64 Kb)
+
+And most important, Major type 1 describes PBMFS region:
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |1 0 0 1|Blksh-9|P|Flags|DecremB|Typ|CompartSz|
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+не хватает ни Repeat Count нормально, ни Gap length внутри
+---
+вариант с uint16_t:
+
+move constants Blshift and Pyramint outside; start with two bits
+on top level, for first in pair it is size of ofsset:
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |Num|                                                           \
+     +-+-+         Offset, Num + 1 words (16/32/48/64 bits)          /
+     \                                                               \
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+for second in top-level pair, or inside it's structure, it's scalar or array:
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |0 0|T|L|    Data of type T, 16 bits or 32 bits if L is set     |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+      0                   1
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |Arr|J|       Repeat Count      |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+if Arr>0, it's array with Arr+J elements, and for array if Repeat Count > 0,
+then J means `join(gap, body)` and first element MUST be Gap Length scalar:
+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |0 0|0|L|Shift|        Following Upper-Layer Gap Length         |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+And most important, type 1 describes PBMFS region:
+
+      0                   1
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |0 0|1 0|S|T/Flg|DecrB|CompartSz|
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+S - soft-reserved flag
+
+0 - usual compartment group
+1 - usual compartment group with XOR cylinder
+2 - MFT compartment group
+3 - MFT compartment group with XOR cylinder
+4 - halved MFT compartment group with XOR cylinder
+5-7 - last compartment group of partition:
+
+      0                   1
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |0 0|1 0|S|1|DecrB+4|X|CompartSz|
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+  where X is XOR cylinder flag.
+
+That is, usual cylinder can be at most 7 blocks less than full Pyramint (0b11000,
+in Pyramint5 is 256 for 512 total - 2 Mb on 4K), and last CG can be 11 blocks
+less (0b10100, in Pyramint5 is 80 for 96 total - 384 Kb on 4 K block)
+===
+15.04.24
+NOTE that on top-level, pair - offset and scalar/structure - form something
+like a "partition" in partition tables. That is, in GPT partitions do not need
+to be strictly consequently on disk:
+
+#    Offset       Size    No. Name (Size)
+=>       40  250069600  ada3  GPT  (119G)
+         40   33654432     3  swapssd  (16G)
+   33654472  203423744     1  (null)  (97G)
+  237078216   12991424        - free -  (6.2G)
+
+and so are entries in Volume Map. This is for cases when volume has low free
+space, and new entries for PBMFS are allocated in whatever free regions of
+lesser size - they will be in order of increasing cylinder number, but offset
+may be less than of previous entries. But in contrast to GPT, sum of entries
+MUST cover the volume contiguously, without "free" space (there are gaps for
+it). And that's why the format is not generic CBOR but somewhat crunched:
+space for such fragmentation is limited.
+
+посмотрел, на UFS atime может быть больше mtime/ctime (а вот те 2 всегда равны),
+но для слепого журналирования надо же всю страницу копировать
+если вынести atime из иноды, то две выгоды:
+1) уменьшается размер inode_common, снова есть reserved
+2) MFT-записи atime можно не журналировать
+
+тогда в одном секторе указываем старшее слово, для каких MFT он, и записи по
+8 байт - младшее слово pbmft_no_t и 6 байт собственно atime:
+struct mft_atime {
+	struct mft_record_head	mft_head; /* "ATIM" */
+	uint16_t	atim_mftno_hi;	/* 12: High 16 bits of pbmft_no_t of entries in this record */
+	uint16_t	atim_spare[9];	/* 14: Reserved; currently unused */
+	uint64_t	atim_entries[508]; /* entries of this record */
+
+};
+struct mft_inode_common {
+	uint16_t	di_mode;	/*  12: IFMT, permissions; see below. */
+	uint16_t	di_spare16;	/*  14: Reserved for future use. */
+	uint32_t	di_uid;		/*  16: File owner. */
+	uint32_t	di_gid;		/*  20: File group. */
+	uint32_t	di_flags;	/*  24: Status flags (chflags). */
+	pbmfs_itimes_t	di_times;	/*  28: Three 6-byte times */
+	uint16_t	di_atime_no;	/*  46: Record with atime of this inode. */
+	pbmft_no_t	di_freelink;	/*  48: Next unlinked inode. */
+	pbmft_no_t	di_extattr;	/*  52: Reserved for future use */
+}
+
+к 03.04.24 про Creation order действительно идея может пригодиться?
+да, для cookie в getdents/getdirentries при реализации в btree например - что вполне позволит shrink спереди при удалении самых старых элементов
+- надо проверить по /usr/src, что оффсеты не с нуля
+- в sys/fs/tmpfs/tmpfs_subr.c похоже оно, там RB-дерево
+===
+20.04.24
+в обычной иноде есть её имя в CBOR, а в каталоге-то нет!
+не 10 байт же отводить, даже если common_inode сократить...
+попробуем по принципу из ReiserFS - начало имени + его хэш, чтоб лукап каждой FILE был только при коллизиях
+
+#define MFT_NLDIRECS	645		/* 640*1024/((4096-32)/4) */
+#define MFT_NHDIRECS	40		/* 640*1024-655320 */
+struct pbmfs_dentry_t {
+	pbmft_no_t	dire_fileno;	/* MFT rec of inode */
+	uint8_t		dire_dtype;	/* d_type << 4 | has hash (name truncated) */
+	union {
+		char	dire_fname[11]; /* full name fits, no hash needed */
+		struct {
+		    char dire_tname[7];	/* truncated name */
+		    uint32_t dire_hash;
+		} nh;
+
+	} ud;
+};
+
+struct mft_dirbase {
+	struct mft_record_head	mft_head; /* "DIRB" */
+	struct mft_inode_common inode_common;
+	uint32_t	dirb_totalfree;  /* 56: Total free entries in directory */
+	uint32_t	dirb_totalalloc; /* 60: Total allocated entries in directory */
+	uint16_t	dirb_nrecords;	 /* 64: Total number of MFT records for this directory */
+	int16_t		dirb_nchildir;	 /* 66: To fake di_nlink of ".."'s */
+	uint8_t		dirb_freecount;	 /* 68: Number of free entries in this record */ 
+	uint8_t		dirb_thisalloc;	 /* 69: Integrity checking: entries this record */
+	uint16_t	dirb_spare[13];	 /* 70: Reserved; currently unused */
+	char		dirb_name[128];  /* 96: Name of us in parent directory */
+	pbmfs_dentry_t	dirb_dentries[MFT_NHDIRECS]; /* 224: entries directly in head */
+	uint8_t 	dirb_leaves[MFT_NLDIRECS*5]; /* MFT record numbers of leaves:
+	         pbmft_no_t of leaf and N free entries in 4 leaves ~divided by 4 */
+};
+
+struct mft_dirl {
+	struct mft_record_head	mft_head; /* "DIRL" /*
+	pbmft_no_t	dirb_base;	/* 12: MFT directory base record */
+	pbmft_no_t	dirb_next;	/* 16: MFT number of next record in list */
+	pbmft_no_t	dirb_prev;	/* 20: MFT no of previous record in list */
+	uint8_t		dirb_freecount;	/* 24: Number of free entries in this record */
+	uint8_t		dirb_thisalloc;	/* 25: Integrity checking: entries this record */
+	uint16_t	dirb_recno;	/* 26: We are MFT no N - to calc d_off */
+	uint16_t	dirb_collisflg;	/* 28: Collisions: from us? before us? */
+	uint16_t	dirb_spare;	/* 30: Reserved; currently unused */
+	pbmfs_dentry_t	dirb_dentries[254]; /* entries of this record */
+};
+===
+23.04.24
+#*** файл с несколькими атрибутами данными концептуально подобен составному
+письму в MIME, см. структурные запросы в IMAP4 - то есть, у каждого,
+получается, могут быть свои MIME-типы и др. заголовки? пересмотреть термин
+атрибута тогда?
+Message-Id: надо же поддержать совместимость, а у нас хэш
+- к записям от 29/31.03.24 добавить дополнительный формат: подстроку Id, флаг внешней конвертации
+
+а какая длина у Message-Id может быть?
+
+msg-id          =       [CFWS] "<" id-left "@" id-right ">" [CFWS]
+id-left         =       dot-atom-text / no-fold-quote / obs-id-left 
+id-right        =       dot-atom-text / no-fold-literal / obs-id-right
+no-fold-quote   =       DQUOTE *(qtext / quoted-pair) DQUOTE
+   
+Resnick                     Standards Track                    [Page 23]
+^L 
+RFC 2822                Internet Message Format               April 2001
+
+no-fold-literal =       "[" *(dtext / quoted-pair) "]"
+
+dtext           =       NO-WS-CTL /     ; Non white space controls
+                        %d33-90 /       ; The rest of the US-ASCII
+                        %d94-126        ;  characters not including "[",
+                                        ;  "]", or "\"
+
+qtext           =       NO-WS-CTL /     ; Non white space controls
+                        %d33 /          ; The rest of the US-ASCII
+                        %d35-91 /       ;  characters not including "\"
+                        %d93-126        ;  or the quote character
+
+atext           =       ALPHA / DIGIT / ; Any character except controls,
+                        "!" / "#" /     ;  SP, and specials.
+                        "$" / "%" /     ;  Used for atoms
+                        "&" / "'" /
+                        "*" / "+" /
+                        "-" / "/" /
+                        "=" / "?" /
+                        "^" / "_" /
+                        "`" / "{" /
+                        "|" / "}" /
+                        "~"
+
+atom            =       [CFWS] 1*atext [CFWS]
+
+dot-atom        =       [CFWS] dot-atom-text [CFWS]
+
+dot-atom-text   =       1*atext *("." 1*atext)
+
+quoted-pair     =       ("\" text) / obs-qp
+
+text            =       %d1-9 /         ; Characters excluding CR and LF
+                        %d11 /
+                        %d12 /
+                        %d14-127 /
+                        obs-text
+
+...итого, значит, фолдинг запрещен, то есть 998 лимит на строку, пусть первый CFWS 997, и без угловых = 995
+===
+26.04.24
+продолжая запись от 20.04 - некрасиво как-то, а что там в ZFS?
+а там чанки одинакового размера, и листовая хэш-таблица ссылается на них
+кстати, это же примерно как если бы было в памяти - LIST_ENTRY по выровненному адресу
+да, если адресоваться сразу на глобальный оффсет, а не блок MFT, то и размер каталога может расти постепенно по мере добавления, а не сразу аллоцировать под весь хэш
+а как быть с 640 K ? :) 3-байтные элементы хэша?..
+ну может ограничить реально 640 Кб на каталог, а не записей столько?
+только с next-указателем, получается, надо больше 16 байт на запись.
+
+/* Because 640K ought to be enough for everyone! */
+#define MFT_NLDIRBLKS	(640/4)		/* 4 Kb one record / 4 byte pointer */
+
+struct pbmfs_dentry_t {
+	pbmft_no_t	dire_fileno;	/* MFT rec of inode */
+	uint16_t	dire_hnext;	/* 1: has hash (name truncated) | 15: next in chain */
+	union {
+	    char	dire_fname[26]; /* full name fits, no hash needed */
+	    struct {
+	        char	dire_tname[22];/* truncated name */
+	        uint32_t dire_hash;
+	    } nh;
+
+	} ud;
+};
+
+struct mft_dirbase {
+	struct mft_record_head	mft_head; /* "DIRB" */
+	struct mft_inode_common inode_common;
+	uint16_t	dirb_totalfree;  /* 56: Total free entries in directory */
+	uint16_t	dirb_totalalloc; /* 58: Total allocated entries in directory */
+	uint16_t	dirb_firstfree;	 /* 60: First entry in free list */ 
+	int16_t		dirb_nchildir;	 /* 62: To fake di_nlink of ".."'s */
+	pbmft_no_t	dirb_parent;	 /* 64: To generate ".." record */
+	uint8_t		dirb_nrecords;	 /* 68: Total number of MFT records for this directory */
+	uint8_t		dirb_flags;	 /* 69: 0 = single base record, 1 = hash table */
+	uint16_t	dirb_spare[13];	 /* 70: Reserved; currently unused */
+	char		dirb_name[160];  /* 96: Name of us in parent directory */
+	union {				 /* 256: */
+	    char dirb_cbor_dentries[3840]; /* [ ["fullname",mftno,is_dir], ...] */
+	    struct {
+		pbmft_no_t dirb_leaves[MFT_NLDIRBLKS]; /* MFT record numbers of leaves */
+		uint16_t dirb_hashtable[1597];	/* prime number */
+		char	dirb_salt[6];		/* like zap_salt of ZFS */
+		} hb;
+	} ub;
+};
+
+struct mft_dirl {
+	struct mft_record_head	mft_head; /* "DIRL" /*
+	pbmft_no_t	dirl_base;	/* 12: MFT directory base record */
+	pbmft_no_t	dirl_next;	/* 16: MFT number of next record in list */
+	pbmft_no_t	dirl_prev;	/* 20: MFT no of previous record in list */
+	uint8_t		dirl_recno;	/* 24: We are MFT no N - to calc d_off */
+	uint8_t		dirl_freecount;	/* 25: Number of free entries in this record */
+	uint8_t		dirl_thisalloc;	/* 26: Number of used entries in this record */
+	uint8_t		dirl_firstfree;	/* 27: First free entry in this record */ 
+	uint32_t	dirl_spare;	/* 28: Reserved; currently unused */
+	pbmfs_dentry_t	dirl_dentries[127]; /* entries of this record */
+};
+
+Поначалу храним полные имена в CBOR, потом конвертируем в хэш, обрезая - с создаваемой в этот момент солью.
+Чтобы проще считать размеры, инициализируем в 24 undef, конвертируем в хэш при
+нехватке места или >255 записей, тогда длина внешнего массива всегда 2 байта.
+
+альтернативная версия: если запись сделать 20 байт, то в 640 Кб влезут
+204*160 = 32640 записей, вот почти полная утилизация бит, и dire_fname[14] как
+в первом юниксе, но в mft_dirl так останется только лишь dirl_base
+===
+27.04.24
+Если бы это была полноценная файловая система, то по аналогии с ZAP сделал бы name-value, но как slab allocator типа UMA с битмапом свободных и для имён хэш указывает на головы red-black tree: в каждой записи первые 3 uint64_t rbe_left, rb_right, rbe_parent со старшими 4 битами - сначала тип, free, red, black, value, direntry, ... в случае каталога в других 4 битах d_type и в последних 4 битах длина pad (пусть плитки отличаются по длине не более 16), дальше uint64_t иноды или адрес где value, и потом собственно имя. Выравнивание по cache line пожалуй не нужно (диск дороже), только по 8 или 16 байт. Чтобы уменьшить оверхед, можно самый старший бит - индикатор 32/64, тогда по байту или по 4 бита
+===
+28.04.24
+к предыдущему дню: этот способ некуда применить в PBMFS, но он может оказаться полезным в самой сетевой файловой системе / контроля версий, см. запись от 02.04.24, ведь запрос только нужных страниц по сети подобен чтению только нужных блоков с диска - та же тема latency, только еще более
+ну да, причем именно и только slab с битмапами: если у нас типа иммутабельные страницы по CoW, то есть при обновлении меняется Merkle tree наверх, то нельзя использовать first free / next free linked list - они могут стать invalid после обновления
+slab имеет waste в хвостах, в muSCTP же надо передавать поменьше? ничего, по сети можно компрессию применить просто, а вот иметь унифицированный с диском формат - удобно
+тогда и к записи от 23.04.24 - надо поддержать и длину 1024, и бинарные имена, а не NUL-terminated
+
+r: 0 for black, 1 for red
+L000 - free entry
+L001 - value entry
+L01r - RB TREE entry, tiny value - half size XXX something bad
+L10r - RB TREE entry, tiny value - word size
+L11r - RB TREE entry, value bytestring is in entry at offset
+
+что здесь не так? вынести отдельно тип чтоб d_type был частный случай? тема NNTP overview?
+почитал RFC 3977 про NNTP overview, там список полей в базе данных, это больше похоже на индексацию в SQLite в Fossil, чем на более стабильный формат его манифестов, так что такое уже в протокол вынести, видимо
+а что делать с creation order заместо offset? linked list подходит плохо при удалениях, а счетчик позволит не менять имевшиеся записи (хотя при ребалансе дерева же меняются...)
+нельзя уменьшать размер указателей - при балансировке же могут оказаться другие значения, более длинные, и не влезем в slab
+читал исходники UFS, похоже там срать хотели на сохранение offset - там и directory compactification возможен, и перемещение записей внутри блока при фрагментации места свободных записей (кстати, не баг ли уж это в UFS?)
+ну проблемы с "пока читаем, кто-то удалил или добавил" для DVCS нет, работа идёт на снапшоте
+тогда можно было бы не беспокоиться насчет offset и сделать его prefix tree по creation order? ну пусть меняется offset при коммитах, а RB-tree уже на имена значения внутри, как и ранее
+- редактирование сообщений можно было бы делать атрибутами values, но они
+  удобны как 8 байт смещения, а если смещение меняется, то никак
+- со счетчиком creation order как offset тогда не более 2^64 элементов за время жизни,
+  мы же ограничены API где 64 бита off_t
+===
+29.04.24
+а что, если старшие биты *basep в getdirentries()/lseek() заабьюзить? типа вот с таким флагом - мы итерируемся в порядке дерева, т.е. по алфавиту, с другим - по creation order, и т.д., и только без всего - по-старом как offset? Соответственно, сами "размеры" записей сделать малыми, хоть по 1 байту, собственно, как и tmpfs делает
+можно даже по смещению 2^56 отдать записи, в которых d_fileno будет значению старшего байта, а d_name - поддерживаемой команде, такое capability query
+- или нет, для каждой команды - по "все младшие нули" отдавать её тип/имя/пр.
+  чтобы не тратить 256 смещений в каждом блоке
+- ну или только две, где были бы "." и "..", и ограничить эти на 255 кстати,
+  пока приложение еще не знает, какая максимальная длина
+
