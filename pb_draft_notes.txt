@@ -1747,4 +1747,21 @@ TBD делать ли больше мегабайта? совмещать ли �
 ===
 10.07.24
 не забыть о необходимости частичной доступности каталога по сети - как в IMAP-папке или NNTP
+===
+27.07.24
+https://git-scm.com/docs/gitnamespaces чем-то похоже на volume, только костыль и без security
+https://fossil-scm.org/forum/info/0e3b65df92417c168d05 в ту же тему всё обсуждение, e.g. Corrollary:
+<<Yes, for a reason sufficiently simple that I'm willing to treat it as an axiom of software development: if two different directories contain files with independent lifetimes, they need to live in independent repos.
+
+Corrollary: The only time two or more files should live in a single repo is when they need to be versioned in lockstep.
+
+This does not always occur here, but that's because it's an ideal I strive to uphold, not a law I'm bound by. The only penalties I pay for my failure to achieve the ideal are personal.
+
+The primary exception is "junk drawer" repos, like the one for the locally-written contents of `~/bin`. Each file has an independent lifetime, for the most part, since few of these programs interoperate, or even, for that matter, *cooperate*. Yet, I put them all together because I want them checked out together and updated together, in a single step.>>
+===
+12.10.24
+хранить в иноде (основной fs) некую статистику по файлу, чтобы знать, как его лучше реаллоцировать - например, из какого слаба в какой при мелком хвосте, или ухода из слабов
+===
+30.10.24
+TODO look at https://steveklabnik.github.io/jujutsu-tutorial/introduction/introduction.html
 
